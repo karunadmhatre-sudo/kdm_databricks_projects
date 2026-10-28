@@ -1,11 +1,11 @@
 # Enterprise Delta Lake Architecture: Fraud Detection Pipeline
 
-## 1. Architecture Overview
+## Architecture Overview
 This project implements an end-to-end, enterprise-grade **Medallion (Bronze-Silver-Gold) Data Lakehouse** architecture on Databricks using Delta Lake, Structured Streaming, and Liquid Clustering. The system processes high-volume financial transaction streams, enforces strict data quality validations, routes quarantine data, and produces near-real-time security alerts and daily merchant risk analytics.
 
 ---
 
-## 2. Pipeline Layers & Implementation Details
+## Pipeline Layers & Implementation Details
 
 ### Bronze Layer (`finance.bronze.transactions_raw`)
 * **Role**: Raw ingestion layer preserving source payload metadata and handling malformed data.
@@ -37,8 +37,6 @@ This project implements an end-to-end, enterprise-grade **Medallion (Bronze-Silv
 
 ---
 
-## 3. Key Technical Resolutions & Best Practices
+### Pipeline Data Lineage & Flow
+- **End-to-End Traceability**: Lineage is explicitly maintained across all medallion layers
 
-* **Schema Alignment & Order Matching**: Resolved `DELTA_METADATA_MISMATCH` errors in Table ACL environments by implementing explicit `.select(...)` projections matching the physical Delta schema order prior to writing.
-* **Quarantine Schema Parity**: Standardized `finance.silver.transactions_quarantine` creation using SQL `LIKE` syntax to inherit exact data types and liquid clustering definitions.
-* **Checkpoint Versioning & Lineage Integrity**: Diagnosed stream row multiplication caused by changing streaming checkpoint paths and standardized checkpoint directory management (`/metadata/_checkpoints/...`).

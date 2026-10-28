@@ -30,3 +30,5 @@ The pipeline ensures data quality through schema enforcement, maintains data lin
   * **Product Performance**: Top reordered products, aisle/department volume analysis, and basket affinity metrics.
   * **Table Optimization**: Organized using Liquid Clustering on high-cardinality keys to streamline analytical workloads and accelerate query execution.
 
+### Pipeline Data Lineage & Flow
+- **End-to-End Traceability**: Lineage is explicitly maintained across all medallion layers, tracing records seamlessly from raw **Bronze** Auto Loader ingestion, through cleansing, standardization, and **SCD Type 1/2** tracking in the **Silver** layer, down to incrementally loaded fact and dimensional tables.

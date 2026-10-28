@@ -1,0 +1,44 @@
+# Enterprise Delta Lake Architecture: Fraud Detection Pipeline
+
+## 1. Architecture Overview
+This project implements an end-to-end, enterprise-grade **Medallion (Bronze-Silver-Gold) Data Lakehouse** architecture on Databricks using Delta Lake, Structured Streaming, and Liquid Clustering. The system processes high-volume financial transaction streams, enforces strict data quality validations, routes quarantine data, and produces near-real-time security alerts and daily merchant risk analytics.
+
+---
+
+## 2. Pipeline Layers & Implementation Details
+
+### Bronze Layer (`finance.bronze.transactions_raw`)
+* **Role**: Raw ingestion layer preserving source payload metadata and handling malformed data.
+* **Key Features**: 
+  * Ingests incoming batch streaming files with append-only metadata tracking (`source_file_path`, `ingestion_time`, `batch_id`).
+  * **Rescued Data Tracking**: Captures schema drift or malformed records using Auto Loader's rescued data mechanism (`_rescued_data`) to prevent ingestion failures and maintain full data fidelity.
+
+### Silver Layer (`finance.silver.transactions_cleaned`)
+* **Role**: Data cleaning, deduplication, watermarking, dynamic risk scoring, and quality control.
+* **Liquid Clustering**: `CLUSTER BY (sender_account, transaction_type)`
+* **Dynamic Behavior Modes**:
+  Controlled dynamically via job parameter or Databricks Widget (`behavior_mode`), taking one of three values: `HARD_STOP`, `QUARANTINE`, or `WARNING_LOAD`.
+  * **`HARD_STOP`**: Aborts the streaming query immediately upon encountering data quality check failures.
+  * **`QUARANTINE`**: Isolates failing records into `finance.silver.transactions_quarantine` (built using `CREATE TABLE ... LIKE finance.silver.transactions_cleaned` with an added `quarantine_reason` column) while allowing valid records to proceed into the clean Silver table.
+  * **`WARNING_LOAD`**: Logs audit violations to `finance.silver.quality_metrics` while writing all records to the Silver table without interrupting execution.
+* **Metrics Logging**: Captures `total_records`, `invalid_amount_count`, `null_id_count`, `quarantined_count`, `quality_status`, and `execution_mode` into `finance.silver.quality_metrics`.
+
+### Gold Layer
+#### 1. High-Risk Security Alerts Stream (`finance.gold.high_risk_alerts`)
+* **Role**: Operational real-time security alert pipeline.
+* **Liquid Clustering**: `CLUSTER BY (initial_risk_tier, timestamp)`
+* **Inclusion Criteria**: Captures transactions flagged with `initial_risk_tier = 'HIGH'`, `velocity_score > 80`, or `geo_anomaly_score > 80`.
+* **Lineage Tracking**: Preserves `batch_id` to maintain explicit row-level traceability back to Silver and Bronze batches.
+
+#### 2. Daily Merchant Analytics (`finance.gold.merchant_risk_daily`)
+* **Role**: Micro-batch/batch aggregated analytics model for BI dashboards.
+* **Liquid Clustering**: `CLUSTER BY (processing_date, merchant_category)`
+* **Metrics Tracked**: `total_transactions`, `total_amount`, `avg_transaction_amount`, `high_risk_transaction_count`, `avg_velocity_score`, and `avg_geo_anomaly_score`.
+
+---
+
+## 3. Key Technical Resolutions & Best Practices
+
+* **Schema Alignment & Order Matching**: Resolved `DELTA_METADATA_MISMATCH` errors in Table ACL environments by implementing explicit `.select(...)` projections matching the physical Delta schema order prior to writing.
+* **Quarantine Schema Parity**: Standardized `finance.silver.transactions_quarantine` creation using SQL `LIKE` syntax to inherit exact data types and liquid clustering definitions.
+* **Checkpoint Versioning & Lineage Integrity**: Diagnosed stream row multiplication caused by changing streaming checkpoint paths and standardized checkpoint directory management (`/metadata/_checkpoints/...`).

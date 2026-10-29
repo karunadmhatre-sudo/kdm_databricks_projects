@@ -25,16 +25,21 @@ This project implements an end-to-end, enterprise-grade **Medallion (Bronze-Silv
 
 ### Gold Layer
 #### 1. High-Risk Security Alerts Stream (`finance.gold.high_risk_alerts`)
-* **Role**: Operational real-time security alert pipeline.
-* **Liquid Clustering**: `CLUSTER BY (initial_risk_tier, timestamp)`
-* **Inclusion Criteria**: Captures transactions flagged with `initial_risk_tier = 'HIGH'`, `velocity_score > 80`, or `geo_anomaly_score > 80`.
-* **Lineage Tracking**: Preserves `batch_id` to maintain explicit row-level traceability back to Silver and Bronze batches.
+- **Role**: Operational real-time security alert pipeline.
+- **Liquid Clustering**: `CLUSTER BY (initial_risk_tier, timestamp)`
+- **Inclusion Criteria**: Captures transactions flagged with `initial_risk_tier = 'HIGH'`, `velocity_score > 80`, or `geo_anomaly_score > 80`.
+- **Lineage Tracking**: Preserves `batch_id` to maintain explicit row-level traceability back to Silver and Bronze batches.
 
 #### 2. Daily Merchant Analytics (`finance.gold.merchant_risk_daily`)
-* **Role**: Micro-batch/batch aggregated analytics model for BI dashboards.
-* **Liquid Clustering**: `CLUSTER BY (processing_date, merchant_category)`
-* **Metrics Tracked**: `total_transactions`, `total_amount`, `avg_transaction_amount`, `high_risk_transaction_count`, `avg_velocity_score`, and `avg_geo_anomaly_score`.
+- **Role**: Micro-batch/batch aggregated analytics model for BI dashboards.
+- **Liquid Clustering**: `CLUSTER BY (processing_date, merchant_category)`
+- **Metrics Tracked**: `total_transactions`, `total_amount`, `avg_transaction_amount`, `high_risk_transaction_count`, `avg_velocity_score`, and `avg_geo_anomaly_score`.
 
+#### 3. Rapid Purchase Velocity Stream (`finance.gold.rapid_purchase_alerts`)
+- **Role**: Behavioral fraud detection pipeline tracking rapid repeat transactions and spending velocity.
+- **Core Mechanics**: Implements stateful stream-to-stream self-joins with a 5-minute event-relative rolling lookback window and 10-minute watermarking.
+- **Inclusion Criteria**: Triggers alerts when a sender's transactions cross thresholds (`rolling_tx_count >= 3` or `rolling_total_amount > 500.0`) within the lookback window.
+- **Execution & Sink Pattern**: Uses `outputMode("update")` paired with `foreachBatch` and Delta `.merge()` upserts to handle stateful record mutations cleanly.
 ---
 
 ### Pipeline Data Lineage & Flow

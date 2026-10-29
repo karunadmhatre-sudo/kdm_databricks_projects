@@ -83,25 +83,113 @@ merchant_summary_df.write.format("delta").mode("overwrite").option(
     "overwriteSchema", "true"
 ).saveAsTable("finance.gold.merchant_risk_daily")
 
+# ------------------------------------------
+# 3. Pipeline C:Perform real-time aggregations (e.g., flagging transactions where amount >$5,000
+#     or counting rapid repeat purchases within a 5-minute sliding window).
+# ------------------------------------------
+
+
 print("🚀 Gold Layer processing complete: Alerts stream and Daily Merchant aggregations updated successfully.")
 
 # COMMAND ----------
 
+# ==========================================
+# GOLD LAYER: Perform real-time aggregations (e.g., flagging transactions where amount >$5,000or counting 
+#  rapid repeat purchases within a 5-minute sliding window).
+# ==========================================
+
+from delta.tables import DeltaTable
+from pyspark.sql.functions import col, count, current_timestamp, expr, lit, sum
+
+# 1. Read from the Silver Layer Cleaned Transactions Stream
+silver_stream = spark.readStream.table("finance.silver.transactions_cleaned")
+
+# 2. Alias two instances of the stream for the rolling lookback self-join
+stream_1 = silver_stream.withWatermark("timestamp", "10 minutes").alias("current_tx")
+stream_2 = silver_stream.withWatermark("timestamp", "10 minutes").alias(
+    "historical_tx"
+)
+
+# 3. Perform the stream-to-stream join with time constraints (5-minute rolling lookback)
+rolling_velocity_stream = (
+    stream_1.join(
+        stream_2,
+        (col("current_tx.sender_account") == col("historical_tx.sender_account"))
+        & (
+            col("historical_tx.timestamp")
+            >= col("current_tx.timestamp") - expr("INTERVAL 5 MINUTES")
+        )
+        & (col("historical_tx.timestamp") <= col("current_tx.timestamp")),
+        how="inner",
+    )
+    .groupBy(
+        col("current_tx.transaction_id"),
+        col("current_tx.sender_account"),
+        col("current_tx.timestamp"),
+        col("current_tx.amount"),
+    )
+    .agg(
+        count("historical_tx.transaction_id").alias("rolling_tx_count"),
+        sum("historical_tx.amount").alias("rolling_total_amount"),
+    )
+    # Filter for rapid purchase fraud thresholds
+    .filter(
+        (col("rolling_tx_count") >= 3)
+        | (col("rolling_total_amount") > 500.0)
+    )
+    .withColumn("alert_type", lit("RAPID_PURCHASE_ROLLING_LOOKBACK"))
+    .withColumn("alert_generated_at", current_timestamp())
+)
+
+
+# 4. Define foreachBatch function using Delta .merge() to safely upsert update-mode results
+def upsert_rolling_alerts(batch_df, batch_id):
+  # Ensure the target table exists before attempting a merge
+  batch_df.sparkSession.sql("""
+        CREATE TABLE IF NOT EXISTS finance.gold.rapid_purchase_alerts (
+            transaction_id STRING,
+            sender_account STRING,
+            timestamp TIMESTAMP,
+            amount DOUBLE,
+            rolling_tx_count LONG,
+            rolling_total_amount DOUBLE,
+            alert_type STRING,
+            alert_generated_at TIMESTAMP
+        ) USING DELTA
+    """)
+
+  deltaTable = DeltaTable.forName(
+      batch_df.sparkSession, "finance.gold.rapid_purchase_alerts"
+  )
+
+  (
+      deltaTable.alias("target")
+      .merge(
+          batch_df.alias("source"),
+          "target.transaction_id = source.transaction_id",
+      )
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute()
+  )
+
+
+# 5. Start the Streaming Query using update mode with foreachBatch
+rolling_query = (
+    rolling_velocity_stream.writeStream.foreachBatch(upsert_rolling_alerts)
+    .outputMode("update")  # Required for stateful stream-stream joins
+    .option(
+        "checkpointLocation",
+        "/Volumes/finance/bronze/operational_data_vol/metadata/_checkpoints/gold_rolling_velocity_v1",
+    )
+    .trigger(availableNow=True)
+    .start()
+)
+
+rolling_query.awaitTermination()
+
+
+# COMMAND ----------
+
 # MAGIC %sql
-# MAGIC -- 1. Check Bronze raw input count
-# MAGIC SELECT 'Bronze Raw' AS layer, count(*) AS total_rows FROM finance.bronze.transactions_raw
-# MAGIC
-# MAGIC UNION ALL
-# MAGIC
-# MAGIC -- 2. Check Silver clean count
-# MAGIC SELECT 'Silver Cleaned' AS layer, count(*) AS total_rows FROM finance.silver.transactions_cleaned
-# MAGIC
-# MAGIC UNION ALL
-# MAGIC
-# MAGIC -- 3. Check Gold High-Risk Alerts count
-# MAGIC SELECT 'Gold Alerts' AS layer, count(*) AS total_rows FROM finance.gold.high_risk_alerts
-# MAGIC
-# MAGIC UNION ALL
-# MAGIC
-# MAGIC -- 4. Check Gold Daily Summary count
-# MAGIC SELECT 'Gold Merchant Summary' AS layer, count(*) AS total_rows FROM finance.gold.merchant_risk_daily;
+# MAGIC select * from finance.gold.rapid_purchase_alerts
